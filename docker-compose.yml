@@ -1,0 +1,175 @@
+---
+services:
+  nginx:
+    image: nginx:1.27-alpine
+    hostname: nginx
+    container_name: nginx
+    restart: always
+    depends_on:
+      - outline
+      - keycloak
+    ports:
+      - 443:443
+      - 80:80
+    networks:
+      nginx:
+        aliases:
+          - auth.example.com
+          - wiki.example.com
+      backend:
+      auth:
+    volumes:
+      - type: bind
+        source: ./config/nginx/nginx.conf
+        target: /etc/nginx/nginx.conf
+        read_only: true    
+      - type: bind
+        source: ./config/nginx/conf.d
+        target: /etc/nginx/conf.d
+        read_only: true
+      - type: bind
+        source: ./config/nginx/certs
+        target: /config/certs
+        read_only: true        
+      - type: tmpfs
+        target: /run
+        tmpfs:
+          size: 10m
+      - type: tmpfs
+        target: /var/cache/nginx
+        tmpfs:
+          size: 1g
+
+  outline:
+    image: outlinewiki/outline:1.5.0
+    restart: always
+    env_file: ./config/outline/.env
+    volumes:
+      - type: volume
+        source: storage-data
+        target: /var/lib/outline/data
+        read_only: false
+      - type: bind
+        source: ./config/ca/RCA.crt
+        target: /usr/local/share/ca-certificates/RCA.crt
+        read_only: true  
+    depends_on:
+      - outline_db
+      - redis
+    networks:
+      - backend
+      - auth
+      - nginx
+
+  redis:
+    image: redis:7.4.2
+    read_only: true
+    restart: always  
+    volumes:
+      - type: volume
+        source: redis-data
+        target: /data      
+      - type: bind
+        source: ./config/redis/redis.conf
+        target: /redis.conf
+    command: ["redis-server", "/redis.conf"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 30s
+      retries: 3
+    networks:
+      - backend
+
+  outline_db:
+    image: postgres:16.8
+    restart: always
+    command: >
+      postgres
+      -c config_file=/etc/postgresql/postgresql.conf    
+    volumes:
+      - type: bind
+        source: ./config/outline_db/postgresql.conf
+        target:  /etc/postgresql/postgresql.conf
+        read_only: true
+      - type: volume
+        source: database-data
+        target: /var/lib/postgresql/data
+        read_only: false
+      - type: tmpfs
+        target: /var/run/postgresql
+        tmpfs:
+          size: 10m
+    env_file:
+      - ./config/outline_db/.env
+    mem_limit: 4096m
+    cpus: 2
+    shm_size: 300m 
+    healthcheck:
+      test: >
+        bash -c "
+          pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB
+        "
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - backend
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.5
+    restart: always
+    env_file: ./config/keycloak/.env
+    command:
+      - start
+      - --import-realm
+    volumes:
+      - type: bind
+        source: ./config/keycloak/realm-export.json
+        target: /opt/keycloak/data/import/realm-export.json
+    depends_on:
+      keycloak_db:
+        condition: service_healthy
+    networks:
+      - auth
+
+  keycloak_db:
+    image: postgres:16.8
+    restart: always
+    command: >
+      postgres
+      -c config_file=/etc/postgresql/postgresql.conf
+    env_file: ./config/keycloak_db/.env
+    volumes:
+      - type: bind
+        source: ./config/keycloak_db/postgresql.conf
+        target:  /etc/postgresql/postgresql.conf
+        read_only: true    
+      - type: volume
+        source: keycloak-data
+        target: /var/lib/postgresql/data
+        read_only: false 
+    mem_limit: 2048m
+    cpus: 1
+    shm_size: 150m 
+    healthcheck:
+      test: >
+        bash -c "
+          pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB
+        "
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - auth
+
+volumes:
+  redis-data:
+  storage-data:
+  database-data:
+  keycloak-data:
+
+networks:
+  nginx:
+  backend:
+  auth:  
